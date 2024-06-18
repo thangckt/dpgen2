@@ -103,23 +103,30 @@ from dpgen2.op import (
     RunLmp,
     SelectConfs,
 )
+from dpgen2.op.caly_evo_step_merge import (
+    CalyEvoStepMerge,
+)
 from dpgen2.superop import (
-    CalyEvoStep,
     ConcurrentLearningBlock,
     PrepRunCaly,
     PrepRunDPTrain,
     PrepRunFp,
     PrepRunLmp,
 )
+from dpgen2.superop.caly_evo_step import (
+    CalyEvoStep,
+)
 from dpgen2.utils import (
     BinaryFileInput,
     bohrium_config_from_dict,
     dump_object_to_file,
+    get_artifact_from_uri,
     get_subkey,
     load_object_from_file,
     matched_step_key,
     print_keys_in_nice_format,
     sort_slice_ops,
+    upload_artifact_and_print_uri,
     workflow_config_from_dict,
 )
 from dpgen2.utils.step_config import normalize as normalize_step_dict
@@ -170,22 +177,41 @@ def make_concurrent_learning_op(
             run_config=run_explore_config,
             upload_python_packages=upload_python_packages,
         )
-    elif explore_style == "calypso":
-        caly_evo_step_op = CalyEvoStep(
-            "caly-evo-step",
-            collect_run_caly=CollRunCaly,
-            prep_dp_optim=PrepCalyDPOptim,
-            run_dp_optim=RunCalyDPOptim,
-            prep_config=prep_explore_config,
-            run_config=run_explore_config,
-            upload_python_packages=upload_python_packages,
-        )
+    elif "calypso" in explore_style:
+        expl_mode = explore_style.split(":")[-1] if ":" in explore_style else "default"
+        if expl_mode == "merge":
+            caly_evo_step_op = CalyEvoStepMerge(
+                name="caly-evo-step",
+                collect_run_caly=CollRunCaly,
+                prep_dp_optim=PrepCalyDPOptim,
+                run_dp_optim=RunCalyDPOptim,
+                expl_mode=expl_mode,
+                prep_config=prep_explore_config,
+                run_config=run_explore_config,
+                upload_python_packages=None,
+            )
+        elif expl_mode == "default":
+            caly_evo_step_op = CalyEvoStep(
+                name="caly-evo-step",
+                collect_run_caly=CollRunCaly,
+                prep_dp_optim=PrepCalyDPOptim,
+                run_dp_optim=RunCalyDPOptim,
+                expl_mode=expl_mode,
+                prep_config=prep_explore_config,
+                run_config=run_explore_config,
+                upload_python_packages=upload_python_packages,
+            )
+        else:
+            raise KeyError(
+                f"Unknown key: {explore_style}, support `calypso:default` and `calypso:merge`."
+            )
         prep_run_explore_op = PrepRunCaly(
             "prep-run-calypso",
             prep_caly_input_op=PrepCalyInput,
             caly_evo_step_op=caly_evo_step_op,
             prep_caly_model_devi_op=PrepCalyModelDevi,
             run_caly_model_devi_op=RunCalyModelDevi,
+            expl_mode=expl_mode,
             prep_config=prep_explore_config,
             run_config=run_explore_config,
             upload_python_packages=upload_python_packages,
@@ -236,8 +262,12 @@ def make_naive_exploration_scheduler(
 
     if explore_style == "lmp":
         return make_lmp_naive_exploration_scheduler(config)
-    elif explore_style == "calypso":
+    elif "calypso" in explore_style:
         return make_calypso_naive_exploration_scheduler(config)
+    else:
+        raise KeyError(
+            f"Unknown key `{explore_style}`, Only support `lmp`, `calypso`, `calypso:merge` and `calypso:default`."
+        )
 
 
 def make_calypso_naive_exploration_scheduler(config):
@@ -429,11 +459,22 @@ def make_finetune_step(
     return finetune_step
 
 
+def get_systems_from_data(data, data_prefix=None):
+    data = [data] if isinstance(data, str) else data
+    assert isinstance(data, list)
+    if data_prefix is not None:
+        data = [os.path.join(data_prefix, ii) for ii in data]
+    data = sum([expand_sys_str(ii) for ii in data], [])
+    return data
+
+
 def workflow_concurrent_learning(
     config: Dict,
 ) -> Tuple[Step, Optional[Step]]:
     default_config = config["default_step_config"]
 
+    train_config = config["train"]["config"]
+    explore_config = config["explore"]["config"]
     train_style = config["train"]["type"]
     explore_style = config["explore"]["type"]
     fp_style = config["fp"]["type"]
@@ -475,14 +516,12 @@ def workflow_concurrent_learning(
         upload_python_packages = _upload_python_packages
 
     valid_data = config["inputs"]["valid_data_sys"]
-    if valid_data is not None:
+    if config["inputs"]["valid_data_uri"] is not None:
+        valid_data = get_artifact_from_uri(config["inputs"]["valid_data_uri"])
+    elif valid_data is not None:
         valid_data_prefix = config["inputs"]["valid_data_prefix"]
-        valid_data = [valid_data] if isinstance(valid_data, str) else valid_data
-        assert isinstance(valid_data, list)
-        if valid_data_prefix is not None:
-            valid_data = [os.path.join(valid_data_prefix, ii) for ii in valid_data]
-        valid_data = [expand_sys_str(ii) for ii in valid_data]
-        valid_data = upload_artifact(valid_data)
+        valid_data = get_systems_from_data(valid_data, valid_data_prefix)
+        valid_data = upload_artifact_and_print_uri(valid_data, "valid_data")
     concurrent_learning_op = make_concurrent_learning_op(
         train_style,
         explore_style,
@@ -508,8 +547,7 @@ def workflow_concurrent_learning(
         template_script = [json.loads(Path(ii).read_text()) for ii in template_script_]
     else:
         template_script = json.loads(Path(template_script_).read_text())
-    train_config = config["train"]["config"]
-    explore_config = config["explore"]["config"]
+
     if (
         "teacher_model_path" in explore_config
         and explore_config["teacher_model_path"] is not None
@@ -541,35 +579,34 @@ def workflow_concurrent_learning(
     multitask = config["inputs"]["multitask"]
     if multitask:
         head = config["inputs"]["head"]
-        multi_init_data = config["inputs"]["multi_init_data"]
-        init_data = []
-        multi_init_data_idx = {}
-        for k, v in multi_init_data.items():
-            sys = v["sys"]
-            sys = [sys] if isinstance(sys, str) else sys
-            assert isinstance(sys, list)
-            if v["prefix"] is not None:
-                sys = [os.path.join(v["prefix"], ii) for ii in sys]
-            sys = [expand_sys_str(ii) for ii in sys]
-            istart = len(init_data)
-            init_data += sys
-            iend = len(init_data)
-            multi_init_data_idx[k] = list(range(istart, iend))
+        if config["inputs"]["multi_init_data_uri"] is not None:
+            init_data = get_artifact_from_uri(config["inputs"]["multi_init_data_uri"])
+        else:
+            multi_init_data = config["inputs"]["multi_init_data"]
+            init_data = {}
+            for k, v in multi_init_data.items():
+                sys = v["sys"]
+                sys = get_systems_from_data(sys, v.get("prefix", None))
+                init_data[k] = sys
+            init_data = upload_artifact_and_print_uri(init_data, "multi_init_data")
         train_config["multitask"] = True
         train_config["head"] = head
-        train_config["multi_init_data_idx"] = multi_init_data_idx
         explore_config["head"] = head
     else:
-        init_data_prefix = config["inputs"]["init_data_prefix"]
-        init_data = config["inputs"]["init_data_sys"]
-        if init_data_prefix is not None:
-            init_data = [os.path.join(init_data_prefix, ii) for ii in init_data]
-        if isinstance(init_data, str):
-            init_data = expand_sys_str(init_data)
-    init_data = upload_artifact(init_data)
+        if config["inputs"]["init_data_uri"] is not None:
+            init_data = get_artifact_from_uri(config["inputs"]["init_data_uri"])
+        else:
+            init_data_prefix = config["inputs"]["init_data_prefix"]
+            init_data = config["inputs"]["init_data_sys"]
+            init_data = get_systems_from_data(init_data, init_data_prefix)
+            init_data = upload_artifact_and_print_uri(init_data, "init_data")
     iter_data = upload_artifact([])
-    if init_models_paths is not None:
-        init_models = upload_artifact(init_models_paths)
+    if train_style == "dp" and config["train"]["init_models_uri"] is not None:
+        init_models = get_artifact_from_uri(config["train"]["init_models_uri"])
+    elif train_style == "dp-dist" and config["train"]["student_model_uri"] is not None:
+        init_models = get_artifact_from_uri(config["train"]["student_model_uri"])
+    elif init_models_paths is not None:
+        init_models = upload_artifact_and_print_uri(init_models_paths, "init_models")
     else:
         init_models = None
 
@@ -749,7 +786,7 @@ def submit_concurrent_learning(
         # wf_config["inputs"]["do_finetune"] = False
         # finetune will not be done again if the old process is reused.
 
-    wf = Workflow(name=wf_config["name"])
+    wf = Workflow(name=wf_config["name"], parallelism=wf_config["parallelism"])
 
     if wf_config["inputs"].get("do_finetune", False):
         assert finetune_step is not None
@@ -809,6 +846,8 @@ def get_superop(key):
         return key.replace("prep-caly-model-devi", "prep-run-explore")
     elif "run-caly-model-devi" in key:
         return re.sub("run-caly-model-devi-[0-9]*", "prep-run-explore", key)
+    elif "caly-evo-step" in key:
+        return re.sub("caly-evo-step-[0-9]*", "prep-run-explore", key)
     return None
 
 
@@ -842,30 +881,51 @@ def get_resubmit_keys(
     wf,
 ):
     all_step_keys = successful_step_keys(wf)
-    all_step_keys = matched_step_key(
-        all_step_keys,
-        [
-            "prep-run-train",
-            "prep-train",
-            "run-train",
-            "modify-train-script",
-            "prep-caly-input",
+    step_keys = [
+        "prep-run-train",
+        "prep-train",
+        "run-train",
+        "modify-train-script",
+        "prep-caly-input",
+        "prep-caly-model-devi",
+        "run-caly-model-devi",
+        "prep-run-explore",
+        "prep-lmp",
+        "run-lmp",
+        "select-confs",
+        "prep-run-fp",
+        "prep-fp",
+        "run-fp",
+        "collect-data",
+        "scheduler",
+        "id",
+    ]
+    if (
+        len(
+            matched_step_key(
+                all_step_keys,
+                [
+                    "collect-run-calypso",
+                    "prep-dp-optim",
+                    "run-dp-optim",
+                ],
+            )
+        )
+        > 0
+    ):
+        # calypso default mode
+        step_keys += [
             "collect-run-calypso",
             "prep-dp-optim",
             "run-dp-optim",
-            "prep-caly-model-devi",
-            "run-caly-model-devi",
-            "prep-run-explore",
-            "prep-lmp",
-            "run-lmp",
-            "select-confs",
-            "prep-run-fp",
-            "prep-fp",
-            "run-fp",
-            "collect-data",
-            "scheduler",
-            "id",
-        ],
+        ]
+    else:
+        # calypso merge mode
+        step_keys.append("caly-evo-step")
+
+    all_step_keys = matched_step_key(
+        all_step_keys,
+        step_keys,
     )
     all_step_keys = sort_slice_ops(
         all_step_keys,

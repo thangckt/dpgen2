@@ -45,6 +45,7 @@ def dp_dist_train_args():
     doc_config = "Configuration of training"
     doc_template_script = "File names of the template training script. It can be a `List[str]`, the length of which is the same as `numb_models`. Each template script in the list is used to train a model. Can be a `str`, the models share the same template training script. "
     dock_student_model_path = "The path of student model"
+    doc_student_model_uri = "The URI of student model"
 
     return [
         Argument(
@@ -59,6 +60,13 @@ def dp_dist_train_args():
             "template_script", [List[str], str], optional=False, doc=doc_template_script
         ),
         Argument("student_model_path", str, optional=True, doc=dock_student_model_path),
+        Argument(
+            "student_model_uri",
+            str,
+            optional=True,
+            default=None,
+            doc=doc_student_model_uri,
+        ),
     ]
 
 
@@ -67,6 +75,7 @@ def dp_train_args():
     doc_config = "Configuration of training"
     doc_template_script = "File names of the template training script. It can be a `List[str]`, the length of which is the same as `numb_models`. Each template script in the list is used to train a model. Can be a `str`, the models share the same template training script. "
     doc_init_models_paths = "the paths to initial models"
+    doc_init_models_uri = "The URI of initial models"
 
     return [
         Argument(
@@ -88,6 +97,13 @@ def dp_train_args():
             default=None,
             doc=doc_init_models_paths,
             alias=["training_iter0_model_path"],
+        ),
+        Argument(
+            "init_models_uri",
+            str,
+            optional=True,
+            default=None,
+            doc=doc_init_models_uri,
         ),
     ]
 
@@ -198,8 +214,90 @@ def lmp_args():
     ]
 
 
+def run_expl_caly_conf_args():
+    doc_caly_model_devi_group_size = "group size for model deviation."
+    doc_run_calypso_command = "command of running calypso."
+    doc_caly_run_dp_opt_command = "command of running optimization with dp."
+    return [
+        Argument(
+            "model_devi_group_size",
+            int,
+            optional=True,
+            doc=doc_caly_model_devi_group_size,
+        ),
+        Argument(
+            "run_calypso_command",
+            str,
+            optional=True,
+            default="calypso.x",
+            doc=doc_run_calypso_command,
+        ),
+        Argument(
+            "run_opt_command",
+            str,
+            optional=True,
+            doc=doc_caly_run_dp_opt_command,
+        ),
+    ]
+
+
+def caly_args():
+    doc_config = "Configuration of calypso exploration"
+    doc_max_numb_iter = "Maximum number of iterations per stage"
+    doc_fatal_at_max = (
+        "Fatal when the number of iteration per stage reaches the `max_numb_iter`"
+    )
+    doc_output_nopbc = "Remove pbc of the output configurations"
+    doc_convergence = "The method of convergence check."
+    doc_configuration = "A list of initial configurations."
+    doc_stages = (
+        "The definition of exploration stages of type `List[List[ExplorationTaskGroup]`. "
+        "The outer list provides the enumeration of the exploration stages. "
+        "Then each stage is defined by a list of exploration task groups. "
+        "Each task group is described in :ref:`the task group definition<task_group_sec>` "
+    )
+
+    return [
+        Argument(
+            "config",
+            dict,
+            run_expl_caly_conf_args(),
+            optional=True,
+            default=RunLmp.normalize_config({}),
+            doc=doc_config,
+        ),
+        Argument(
+            "max_numb_iter", int, optional=True, default=10, doc=doc_max_numb_iter
+        ),
+        Argument(
+            "fatal_at_max", bool, optional=True, default=True, doc=doc_fatal_at_max
+        ),
+        Argument(
+            "output_nopbc", bool, optional=True, default=False, doc=doc_output_nopbc
+        ),
+        Argument(
+            "convergence",
+            dict,
+            [],
+            [variant_conv()],
+            optional=False,
+            doc=doc_convergence,
+        ),
+        Argument(
+            "configurations",
+            list,
+            [],
+            [variant_conf()],
+            optional=False,
+            repeat=True,
+            doc=doc_configuration,
+            alias=["configuration"],
+        ),
+        Argument("stages", List[List[dict]], optional=False, doc=doc_stages),
+    ]
+
+
 def variant_explore():
-    # TODO: add calypso_args
     doc = "The type of the exploration"
     doc_lmp = "The exploration by LAMMPS simulations"
     doc_calypso = "The exploration by CALYPSO structure prediction"
@@ -207,7 +305,9 @@ def variant_explore():
         "type",
         [
             Argument("lmp", dict, lmp_args(), doc=doc_lmp),
-            Argument("calypso", dict, lmp_args(), doc=doc_calypso),
+            Argument("calypso", dict, caly_args(), doc=doc_calypso),
+            Argument("calypso:default", dict, caly_args(), doc=doc_calypso),
+            Argument("calypso:merge", dict, caly_args(), doc=doc_calypso),
         ],
         doc=doc,
     )
@@ -270,14 +370,17 @@ def input_args():
     doc_do_finetune = textwrap.dedent(doc_do_finetune)
     doc_init_data_prefix = "The prefix of initial data systems"
     doc_init_sys = "The inital data systems"
+    doc_init_data_uri = "The URI of initial data"
     doc_multitask = "Do multitask training"
     doc_head = "Head to use in the multitask training"
     doc_multi_init_data = (
         "The inital data for multitask, it should be a dict, whose keys are task names and each value is a dict"
         "containing fields `prefix` and `sys` for initial data of each task"
     )
+    doc_multi_init_data_uri = "The URI of initial data for multitask"
     doc_valid_data_prefix = "The prefix of validation data systems"
     doc_valid_sys = "The validation data systems"
+    doc_valid_data_uri = "The URI of validation data"
 
     return [
         Argument("type_map", List[str], optional=False, doc=doc_type_map),
@@ -301,6 +404,13 @@ def input_args():
             doc=doc_init_sys,
         ),
         Argument(
+            "init_data_uri",
+            str,
+            optional=True,
+            default=None,
+            doc=doc_init_data_uri,
+        ),
+        Argument(
             "multitask",
             bool,
             optional=True,
@@ -322,6 +432,13 @@ def input_args():
             doc=doc_multi_init_data,
         ),
         Argument(
+            "multi_init_data_uri",
+            str,
+            optional=True,
+            default=None,
+            doc=doc_multi_init_data_uri,
+        ),
+        Argument(
             "valid_data_prefix",
             str,
             optional=True,
@@ -334,6 +451,13 @@ def input_args():
             optional=True,
             default=None,
             doc=doc_valid_sys,
+        ),
+        Argument(
+            "valid_data_uri",
+            str,
+            optional=True,
+            default=None,
+            doc=doc_valid_data_uri,
         ),
     ]
 
@@ -509,6 +633,7 @@ def submit_args(default_step_config=normalize_step_dict({})):
     doc_explore = "The configuration for exploration"
     doc_fp = "The configuration for FP"
     doc_name = "The workflow name, 'dpgen' for default"
+    doc_parallelism = "The parallelism for the workflow. Accept an int that stands for the maximum number of running pods for the workflow. None for default"
 
     return (
         dflow_conf_args()
@@ -552,6 +677,9 @@ def submit_args(default_step_config=normalize_step_dict({})):
             ),
             Argument("fp", dict, [], [variant_fp()], optional=False, doc=doc_fp),
             Argument("name", str, optional=True, default="dpgen", doc=doc_name),
+            Argument(
+                "parallelism", int, optional=True, default=None, doc=doc_parallelism
+            ),
         ]
     )
 

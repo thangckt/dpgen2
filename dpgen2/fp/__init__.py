@@ -19,6 +19,13 @@ from .vasp import (
     VaspInputs,
 )
 
+from .gpaw import (
+    GpawInputs,
+    PrepGpaw,
+    RunGpaw,
+)
+
+
 fp_styles = {
     "vasp": {
         "inputs": VaspInputs,
@@ -39,5 +46,10 @@ fp_styles = {
         "inputs": FpOpAbacusInputs,
         "prep": PrepFpOpAbacus,
         "run": RunFpOpAbacus,
+    },
+    "gpaw": {
+        "inputs": GpawInputs,
+        "prep": PrepGpaw,
+        "run": RunGpaw,
     },
 }

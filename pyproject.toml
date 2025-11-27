@@ -80,3 +80,6 @@ exclude = [
 [tool.isort]
 profile = "black"
 force_grid_wrap = 1
+
+[tool.ruff]
+line-length = 88
